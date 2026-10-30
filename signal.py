@@ -5,15 +5,12 @@ import os
 from datetime import datetime
 
 # ================== НАСТРОЙКИ ==================
-SYMBOLS = ["BTCUSDT", "ETHUSDT"]          # Монеты
-INTERVAL = "15"                           # Таймфрейм: 1, 3, 5, 15, 30, 60, 240, D
-LIMIT = 100                               # Сколько свечей брать
+SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+INTERVAL = "15"
+LIMIT = 100
 
 RSI_PERIOD = 14
 EMA_PERIOD = 50
-
-# Условие сигнала (можно менять)
-# Сейчас: RSI < 30 и цена выше EMA
 RSI_OVERSOLD = 30
 # ===============================================
 
@@ -28,14 +25,27 @@ def get_klines(symbol, interval, limit):
         "interval": interval,
         "limit": limit
     }
-    response = requests.get(url, params=params, timeout=10)
-    data = response.json()
     
-    if data["retCode"] != 0:
-        raise Exception(f"Bybit error: {data['retMsg']}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    
+    response = requests.get(url, params=params, headers=headers, timeout=15)
+    
+    # Показываем, что реально вернул сервер
+    print(f"=== {symbol} ===")
+    print(f"Status code: {response.status_code}")
+    print(f"Response text (first 300 chars): {response.text[:300]}")
+    
+    try:
+        data = response.json()
+    except Exception as e:
+        raise Exception(f"Не JSON ответ. Ошибка: {e}")
+    
+    if data.get("retCode") != 0:
+        raise Exception(f"Bybit error: {data.get('retMsg')}")
     
     klines = data["result"]["list"]
-    # Bybit отдаёт от новых к старым → разворачиваем
     klines = list(reversed(klines))
     
     df = pd.DataFrame(klines, columns=[
@@ -90,19 +100,12 @@ def check_signals():
             rsi = last["rsi"]
             ema = last["ema"]
             
-            # ===== УСЛОВИЕ СИГНАЛА =====
-            # RSI перешёл ниже 30 и цена выше EMA
             signal = False
             signal_type = ""
             
             if prev["rsi"] >= RSI_OVERSOLD and rsi < RSI_OVERSOLD and price > ema:
                 signal = True
                 signal_type = "🟢 LONG (RSI oversold + выше EMA)"
-            
-            # Можно добавить условие на шорт:
-            # if prev["rsi"] <= 70 and rsi > 70 and price < ema:
-            #     signal = True
-            #     signal_type = "🔴 SHORT"
             
             if signal:
                 msg = (
@@ -118,7 +121,6 @@ def check_signals():
         except Exception as e:
             print(f"Ошибка по {symbol}: {e}")
     
-    # Отправляем все сигналы
     for msg in messages:
         send_telegram(msg)
         print("Сигнал отправлен:", msg)
