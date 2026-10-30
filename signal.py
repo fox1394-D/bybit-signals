@@ -5,8 +5,8 @@ import os
 from datetime import datetime
 
 # ================== НАСТРОЙКИ ==================
-SYMBOLS = ["BTCUSDT", "ETHUSDT"]
-INTERVAL = "15"
+SYMBOLS = ["BTCUSDT", "ETHUSDT"]          # Монеты
+INTERVAL = "15m"                          # Таймфрейм: 1m, 5m, 15m, 1h, 4h
 LIMIT = 100
 
 RSI_PERIOD = 14
@@ -18,38 +18,32 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def get_klines(symbol, interval, limit):
-    url = "https://api.bybit.com/v5/market/kline"
+    url = "https://api.binance.com/api/v3/klines"
     params = {
-        "category": "linear",
         "symbol": symbol,
         "interval": interval,
         "limit": limit
     }
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0"
     }
     
     response = requests.get(url, params=params, headers=headers, timeout=15)
     
-    # Показываем, что реально вернул сервер
     print(f"=== {symbol} ===")
     print(f"Status code: {response.status_code}")
-    print(f"Response text (first 300 chars): {response.text[:300]}")
     
-    try:
-        data = response.json()
-    except Exception as e:
-        raise Exception(f"Не JSON ответ. Ошибка: {e}")
+    if response.status_code != 200:
+        print(f"Response: {response.text[:300]}")
+        raise Exception(f"Binance error {response.status_code}")
     
-    if data.get("retCode") != 0:
-        raise Exception(f"Bybit error: {data.get('retMsg')}")
+    data = response.json()
     
-    klines = data["result"]["list"]
-    klines = list(reversed(klines))
-    
-    df = pd.DataFrame(klines, columns=[
-        "timestamp", "open", "high", "low", "close", "volume", "turnover"
+    df = pd.DataFrame(data, columns=[
+        "timestamp", "open", "high", "low", "close", "volume",
+        "close_time", "quote_volume", "trades", "taker_buy_base",
+        "taker_buy_quote", "ignore"
     ])
     
     df["close"] = df["close"].astype(float)
@@ -103,13 +97,14 @@ def check_signals():
             signal = False
             signal_type = ""
             
+            # Условие: RSI пересёк уровень 30 сверху вниз + цена выше EMA
             if prev["rsi"] >= RSI_OVERSOLD and rsi < RSI_OVERSOLD and price > ema:
                 signal = True
                 signal_type = "🟢 LONG (RSI oversold + выше EMA)"
             
             if signal:
                 msg = (
-                    f"<b>{symbol}</b> | {INTERVAL}m\n"
+                    f"<b>{symbol}</b> | {INTERVAL}\n"
                     f"{signal_type}\n"
                     f"Цена: <b>{price}</b>\n"
                     f"RSI: {rsi:.1f}\n"
