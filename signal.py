@@ -19,18 +19,17 @@ RSI_OVERSOLD = 30
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-BYBIT_URL = "https://api.bytick.com/v5/market/kline"
+BINANCE_URL = "https://data-api.binance.vision/api/v3/klines"
 TELEGRAM_URL = "https://api.telegram.org/bot{}/sendMessage"
 
 
 # ==============================
-# ПОЛУЧЕНИЕ ДАННЫХ BYBIT
+# ПОЛУЧЕНИЕ ДАННЫХ BINANCE
 # ==============================
 
 def get_klines(symbol):
 
     params = {
-        "category": "linear",
         "symbol": symbol,
         "interval": INTERVAL,
         "limit": LIMIT
@@ -42,29 +41,31 @@ def get_klines(symbol):
     }
 
     response = requests.get(
-        BYBIT_URL,
+        BINANCE_URL,
         params=params,
         headers=headers,
         timeout=20
     )
 
-    print(f"{symbol}: HTTP {response.status_code}", flush=True)
+    print(
+        f"{symbol}: HTTP {response.status_code}",
+        flush=True
+    )
 
     if response.status_code != 200:
-        print("Ответ Bybit:", response.text[:2000], flush=True)
+        print(
+            "Ответ Binance:",
+            response.text[:2000],
+            flush=True
+        )
         response.raise_for_status()
 
-    data = response.json()
+    candles = response.json()
 
-    if data.get("retCode") != 0:
+    if not isinstance(candles, list) or not candles:
         raise Exception(
-            f"Ошибка Bybit: {data.get('retCode')} - {data.get('retMsg')}"
+            f"Binance не вернул свечи для {symbol}: {candles}"
         )
-
-    candles = data.get("result", {}).get("list", [])
-
-    if not candles:
-        raise Exception(f"Bybit не вернул свечи для {symbol}")
 
     df = pd.DataFrame(
         candles,
@@ -75,7 +76,12 @@ def get_klines(symbol):
             "low",
             "close",
             "volume",
-            "turnover"
+            "close_time",
+            "quote_volume",
+            "trades",
+            "taker_buy_volume",
+            "taker_buy_quote_volume",
+            "ignore"
         ]
     )
 
@@ -96,7 +102,9 @@ def get_klines(symbol):
     df = df.iloc[:-1].copy()
 
     if len(df) < max(RSI_PERIOD, EMA_PERIOD) + 2:
-        raise Exception(f"Недостаточно свечей для {symbol}")
+        raise Exception(
+            f"Недостаточно свечей для {symbol}"
+        )
 
     return df
 
@@ -148,10 +156,14 @@ def calculate_ema(series, period=50):
 def send_telegram(message):
 
     if not TELEGRAM_TOKEN:
-        raise Exception("Не задан TELEGRAM_TOKEN в GitHub Secrets")
+        raise Exception(
+            "Не задан TELEGRAM_TOKEN в GitHub Secrets"
+        )
 
     if not TELEGRAM_CHAT_ID:
-        raise Exception("Не задан TELEGRAM_CHAT_ID в GitHub Secrets")
+        raise Exception(
+            "Не задан TELEGRAM_CHAT_ID в GitHub Secrets"
+        )
 
     url = TELEGRAM_URL.format(TELEGRAM_TOKEN)
 
@@ -172,9 +184,14 @@ def send_telegram(message):
     result = response.json()
 
     if not result.get("ok"):
-        raise Exception(f"Ошибка Telegram: {result}")
+        raise Exception(
+            f"Ошибка Telegram: {result}"
+        )
 
-    print("Сообщение успешно отправлено в Telegram", flush=True)
+    print(
+        "Сообщение успешно отправлено в Telegram",
+        flush=True
+    )
 
 
 # ==============================
@@ -190,7 +207,10 @@ def check_signals():
 
         try:
             print()
-            print(f"Проверяем {symbol}...", flush=True)
+            print(
+                f"Проверяем {symbol}...",
+                flush=True
+            )
 
             df = get_klines(symbol)
 
@@ -231,6 +251,7 @@ def check_signals():
                 message_lines = [
                     "🟢 <b>СИГНАЛ LONG</b>",
                     "",
+                    f"Биржа данных: Binance Spot",
                     f"Монета: <b>{symbol}</b>",
                     f"Таймфрейм: {INTERVAL}",
                     f"Цена: <b>{current['close']}</b>",
@@ -244,15 +265,23 @@ def check_signals():
                     )
                 ]
 
-                signals.append("\n".join(message_lines))
+                signals.append(
+                    "\n".join(message_lines)
+                )
 
         except Exception as error:
 
-            error_message = f"{symbol}: {str(error)}"
+            error_message = (
+                f"{symbol}: {str(error)}"
+            )
 
             errors.append(error_message)
 
-            print("ОШИБКА:", error_message, flush=True)
+            print(
+                "ОШИБКА:",
+                error_message,
+                flush=True
+            )
 
     # Отправка найденных сигналов.
 
@@ -260,19 +289,31 @@ def check_signals():
         send_telegram(signal)
 
     if signals:
+
         print()
-        print(f"Найдено сигналов: {len(signals)}", flush=True)
+        print(
+            f"Найдено сигналов: {len(signals)}",
+            flush=True
+        )
 
     elif errors:
+
         print()
-        print("Сигналы не проверены из-за ошибок:", flush=True)
+        print(
+            "Сигналы не проверены из-за ошибок:",
+            flush=True
+        )
 
         for error in errors:
             print(error, flush=True)
 
     else:
+
         print()
-        print("Сигналов нет.", flush=True)
+        print(
+            "Сигналов нет.",
+            flush=True
+        )
 
 
 # ==============================
@@ -282,7 +323,10 @@ def check_signals():
 if __name__ == "__main__":
 
     print("=" * 50, flush=True)
-    print("ЗАПУСК КРИПТОСИГНАЛОВ BYBIT", flush=True)
+    print(
+        "ЗАПУСК КРИПТОСИГНАЛОВ BINANCE",
+        flush=True
+    )
 
     current_time = datetime.now(timezone.utc)
 
@@ -298,5 +342,11 @@ if __name__ == "__main__":
         check_signals()
 
     except Exception as error:
-        print("КРИТИЧЕСКАЯ ОШИБКА:", error, flush=True)
+
+        print(
+            "КРИТИЧЕСКАЯ ОШИБКА:",
+            error,
+            flush=True
+        )
+
         raise
