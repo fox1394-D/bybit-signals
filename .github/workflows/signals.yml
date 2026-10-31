@@ -24,9 +24,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests pandas
 
+      - name: Check signal.py
+        run: |
+          echo "=================================="
+          echo "ПРОВЕРКА ФАЙЛА signal.py"
+          echo "=================================="
+          pwd
+          ls -l signal.py
+          wc -l signal.py
+          echo "Первые строки файла:"
+          head -n 10 signal.py
+          echo "Последние строки файла:"
+          tail -n 20 signal.py
+
       - name: Run signal script
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MANUAL_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
-        run: python signal.py
+        run: |
+          echo "=================================="
+          echo "ЗАПУСК PYTHON"
+          echo "=================================="
+          python --version
+          python -u signal.py
+          echo "=================================="
+          echo "PYTHON ЗАВЕРШИЛ РАБОТУ"
+          echo "=================================="
