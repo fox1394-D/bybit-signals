@@ -48,15 +48,10 @@ def get_klines(symbol):
         timeout=20
     )
 
-    print(f"{symbol}: HTTP {response.status_code}")
+    print(f"{symbol}: HTTP {response.status_code}", flush=True)
 
     if response.status_code != 200:
-        print("Ответ Bybit:", response.text[:2000])
-        print("Заголовки:", {
-            "server": response.headers.get("server"),
-            "cf-ray": response.headers.get("cf-ray"),
-            "x-bapi-limit-status": response.headers.get("x-bapi-limit-status")
-        })
+        print("Ответ Bybit:", response.text[:2000], flush=True)
         response.raise_for_status()
 
     data = response.json()
@@ -97,7 +92,7 @@ def get_klines(symbol):
 
     df = df.sort_values("timestamp").reset_index(drop=True)
 
-    # Исключаем незакрытую свечу.
+    # Исключаем последнюю незакрытую свечу.
     df = df.iloc[:-1].copy()
 
     if len(df) < max(RSI_PERIOD, EMA_PERIOD) + 2:
@@ -179,7 +174,7 @@ def send_telegram(message):
     if not result.get("ok"):
         raise Exception(f"Ошибка Telegram: {result}")
 
-    print("Сообщение успешно отправлено в Telegram")
+    print("Сообщение успешно отправлено в Telegram", flush=True)
 
 
 # ==============================
@@ -195,7 +190,7 @@ def check_signals():
 
         try:
             print()
-            print(f"Проверяем {symbol}...")
+            print(f"Проверяем {symbol}...", flush=True)
 
             df = get_klines(symbol)
 
@@ -216,7 +211,8 @@ def check_signals():
                 f"{symbol}: "
                 f"Цена={current['close']:.4f}, "
                 f"RSI={current['RSI']:.2f}, "
-                f"EMA={current['EMA']:.4f}"
+                f"EMA={current['EMA']:.4f}",
+                flush=True
             )
 
             # Условие LONG:
@@ -248,9 +244,7 @@ def check_signals():
                     )
                 ]
 
-                message = "\n".join(message_lines)
-
-                signals.append(message)
+                signals.append("\n".join(message_lines))
 
         except Exception as error:
 
@@ -258,7 +252,7 @@ def check_signals():
 
             errors.append(error_message)
 
-            print("ОШИБКА:", error_message)
+            print("ОШИБКА:", error_message, flush=True)
 
     # Отправка найденных сигналов.
 
@@ -267,18 +261,18 @@ def check_signals():
 
     if signals:
         print()
-        print(f"Найдено сигналов: {len(signals)}")
+        print(f"Найдено сигналов: {len(signals)}", flush=True)
 
     elif errors:
         print()
-        print("Сигналы не проверены из-за ошибок:")
+        print("Сигналы не проверены из-за ошибок:", flush=True)
 
         for error in errors:
-            print(error)
+            print(error, flush=True)
 
     else:
         print()
-        print("Сигналов нет.")
+        print("Сигналов нет.", flush=True)
 
 
 # ==============================
@@ -287,8 +281,22 @@ def check_signals():
 
 if __name__ == "__main__":
 
-    print("=" * 50)
-    print("ЗАПУСК КРИПТОСИГНАЛОВ BYBIT")
+    print("=" * 50, flush=True)
+    print("ЗАПУСК КРИПТОСИГНАЛОВ BYBIT", flush=True)
 
     current_time = datetime.now(timezone.utc)
 
+    print(
+        "Время запуска:",
+        current_time.strftime("%d.%m.%Y %H:%M:%S UTC"),
+        flush=True
+    )
+
+    print("=" * 50, flush=True)
+
+    try:
+        check_signals()
+
+    except Exception as error:
+        print("КРИТИЧЕСКАЯ ОШИБКА:", error, flush=True)
+        raise
