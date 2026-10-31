@@ -1,12 +1,12 @@
 import os
+import time
 import requests
 import pandas as pd
 from datetime import datetime, timezone
 
-
-# ==========================================
+# ==============================
 # НАСТРОЙКИ
-# ==========================================
+# ==============================
 
 SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 
@@ -15,62 +15,33 @@ LIMIT = 100
 
 RSI_PERIOD = 14
 EMA_PERIOD = 50
-RSI_OVERSOLD = 30
 
-BYBIT_URL = "https://api.bybit.com/v5/market/kline"
+RSI_OVERSOLD = 30
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-
-# ==========================================
-# ТАЙМФРЕЙМ
-# ==========================================
-
-def bybit_interval(interval):
-
-    mapping = {
-        "1m": "1",
-        "3m": "3",
-        "5m": "5",
-        "15m": "15",
-        "30m": "30",
-        "1h": "60",
-        "2h": "120",
-        "4h": "240",
-        "6h": "360",
-        "12h": "720",
-        "1d": "D",
-        "1w": "W",
-        "1M": "M"
-    }
-
-    if interval not in mapping:
-        raise ValueError(f"Неподдерживаемый таймфрейм: {interval}")
-
-    return mapping[interval]
+BYBIT_URL = "https://api.bybit.com/v5/market/kline"
+TELEGRAM_URL = "https://api.telegram.org/bot{}/sendMessage"
 
 
-# ==========================================
-# ПОЛУЧЕНИЕ СВЕЧЕЙ BYBIT
-# ==========================================
+# ==============================
+# ПОЛУЧЕНИЕ ДАННЫХ BYBIT
+# ==============================
 
-def get_klines(symbol, interval, limit):
+def get_klines(symbol):
 
     params = {
         "category": "linear",
         "symbol": symbol,
-        "interval": bybit_interval(interval),
-        "limit": limit
+        "interval": INTERVAL,
+        "limit": LIMIT
     }
 
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json"
     }
-
-    print(f"\n=== {symbol} ===")
-    print("Источник: Bybit")
 
     response = requests.get(
         BYBIT_URL,
@@ -79,41 +50,28 @@ def get_klines(symbol, interval, limit):
         timeout=20
     )
 
-    print(f"HTTP status: {response.status_code}")
-
-    # Диагностика ошибок HTTP
+    print(f"{symbol}: HTTP {response.status_code}")
 
     if response.status_code != 200:
-
-        print("Текст ответа сервера:")
-        print(response.text[:2000])
-
-        print("Дополнительная информация:")
-
-        for key in ["server", "cf-ray", "x-bapi-limit-status"]:
-            if key in response.headers:
-                print(f"{key}: {response.headers[key]}")
-
-        raise Exception(
-            f"Bybit вернул ошибку HTTP {response.status_code}"
-        )
+        print("Ответ Bybit:", response.text[:2000])
+        print("Заголовки:", {
+            "server": response.headers.get("server"),
+            "cf-ray": response.headers.get("cf-ray"),
+            "x-bapi-limit-status": response.headers.get("x-bapi-limit-status")
+        })
+        response.raise_for_status()
 
     data = response.json()
 
     if data.get("retCode") != 0:
-
-        raise RuntimeError(
-            f"Bybit API error: "
-            f"{data.get('retCode')} - {data.get('retMsg')}"
+        raise Exception(
+            f"Ошибка Bybit: {data.get('retCode')} - {data.get('retMsg')}"
         )
 
     candles = data.get("result", {}).get("list", [])
 
-    if len(candles) < EMA_PERIOD + 2:
-
-        raise RuntimeError(
-            f"Недостаточно свечей: {len(candles)}"
-        )
+    if not candles:
+        raise Exception(f"Bybit не вернул свечи для {symbol}")
 
     df = pd.DataFrame(
         candles,
@@ -128,59 +86,38 @@ def get_klines(symbol, interval, limit):
         ]
     )
 
-    # Сортировка свечей от старых к новым
-
-    df = df.iloc[::-1].reset_index(drop=True)
-
-    # Преобразование числовых данных
-
-    for column in [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "turnover"
-    ]:
-
-        df[column] = pd.to_numeric(
-            df[column],
-            errors="coerce"
-        )
-
+    df["timestamp"] = pd.to_numeric(df["timestamp"])
     df["timestamp"] = pd.to_datetime(
-        pd.to_numeric(df["timestamp"]),
+        df["timestamp"],
         unit="ms",
         utc=True
     )
 
-    df = df.dropna(subset=["close"]).reset_index(drop=True)
+    for column in ["open", "high", "low", "close", "volume"]:
+        df[column] = pd.to_numeric(df[column])
 
-    # Исключаем незакрытую свечу
+    # Bybit возвращает свечи от новых к старым.
+    df = df.sort_values("timestamp").reset_index(drop=True)
 
-    df = df.iloc[:-1].reset_index(drop=True)
+    # Исключаем последнюю незакрытую свечу.
+    df = df.iloc[:-1].copy()
 
-    if len(df) < EMA_PERIOD + 2:
-
-        raise RuntimeError(
-            "Недостаточно закрытых свечей"
-        )
-
-    print(f"Получено закрытых свечей: {len(df)}")
+    if len(df) < max(RSI_PERIOD, EMA_PERIOD) + 2:
+        raise Exception(f"Недостаточно свечей для {symbol}")
 
     return df
 
 
-# ==========================================
+# ==============================
 # РАСЧЁТ RSI
-# ==========================================
+# ==============================
 
 def calculate_rsi(series, period=14):
 
     delta = series.diff()
 
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
     avg_gain = gain.ewm(
         alpha=1 / period,
@@ -198,24 +135,14 @@ def calculate_rsi(series, period=14):
 
     rsi = 100 - (100 / (1 + rs))
 
-    rsi = rsi.mask(
-        (avg_loss == 0) & (avg_gain > 0),
-        100
-    )
-
-    rsi = rsi.mask(
-        (avg_gain == 0) & (avg_loss > 0),
-        0
-    )
-
     return rsi
 
 
-# ==========================================
+# ==============================
 # РАСЧЁТ EMA
-# ==========================================
+# ==============================
 
-def calculate_ema(series, period):
+def calculate_ema(series, period=50):
 
     return series.ewm(
         span=period,
@@ -223,28 +150,19 @@ def calculate_ema(series, period):
     ).mean()
 
 
-# ==========================================
+# ==============================
 # ОТПРАВКА В TELEGRAM
-# ==========================================
+# ==============================
 
 def send_telegram(message):
 
     if not TELEGRAM_TOKEN:
-
-        raise RuntimeError(
-            "Не задан TELEGRAM_TOKEN в GitHub Secrets"
-        )
+        raise Exception("Не задан TELEGRAM_TOKEN в GitHub Secrets")
 
     if not TELEGRAM_CHAT_ID:
+        raise Exception("Не задан TELEGRAM_CHAT_ID в GitHub Secrets")
 
-        raise RuntimeError(
-            "Не задан TELEGRAM_CHAT_ID в GitHub Secrets"
-        )
-
-    url = (
-        f"https://api.telegram.org/"
-        f"bot{TELEGRAM_TOKEN}/sendMessage"
-    )
+    url = TELEGRAM_URL.format(TELEGRAM_TOKEN)
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -263,125 +181,115 @@ def send_telegram(message):
     result = response.json()
 
     if not result.get("ok"):
+        raise Exception(f"Ошибка Telegram: {result}")
 
-        raise RuntimeError(
-            f"Ошибка Telegram: {result}"
-        )
-
-    print("Telegram: сообщение успешно отправлено")
+    print("Сообщение успешно отправлено в Telegram")
 
 
-# ==========================================
-# ПРОВЕРКА ТОРГОВЫХ СИГНАЛОВ
-# ==========================================
+# ==============================
+# ПРОВЕРКА СИГНАЛОВ
+# ==============================
 
 def check_signals():
 
-    messages = []
+    signals = []
+    errors = []
 
     for symbol in SYMBOLS:
 
         try:
+            print(f"\nПроверяем {symbol}...")
 
-            df = get_klines(
-                symbol,
-                INTERVAL,
-                LIMIT
-            )
+            df = get_klines(symbol)
 
-            df["rsi"] = calculate_rsi(
+            df["RSI"] = calculate_rsi(
                 df["close"],
                 RSI_PERIOD
             )
 
-            df["ema"] = calculate_ema(
+            df["EMA"] = calculate_ema(
                 df["close"],
                 EMA_PERIOD
             )
 
-            last = df.iloc[-1]
-            prev = df.iloc[-2]
-
-            price = float(last["close"])
-            rsi = float(last["rsi"])
-            ema = float(last["ema"])
-
-            prev_rsi = float(prev["rsi"])
+            previous = df.iloc[-2]
+            current = df.iloc[-1]
 
             print(
-                f"Цена: {price}\n"
-                f"RSI: {rsi:.2f}\n"
-                f"Предыдущий RSI: {prev_rsi:.2f}\n"
-                f"EMA{EMA_PERIOD}: {ema:.2f}"
+                f"{symbol}: "
+                f"Цена={current['close']:.4f}, "
+                f"RSI={current['RSI']:.2f}, "
+                f"EMA={current['EMA']:.4f}"
             )
 
-            # УСЛОВИЕ LONG
-            # RSI пересёк уровень 30 сверху вниз
-            # Цена находится выше EMA50
+            # Условие LONG:
+            # Предыдущий RSI был не ниже 30,
+            # текущий RSI опустился ниже 30,
+            # цена находится выше EMA 50.
 
-            if (
-                prev_rsi >= RSI_OVERSOLD
-                and rsi < RSI_OVERSOLD
-                and price > ema
-            ):
+            long_signal = (
+                previous["RSI"] >= RSI_OVERSOLD
+                and current["RSI"] < RSI_OVERSOLD
+                and current["close"] > current["EMA"]
+            )
 
-                msg = (
-                    f"<b>{symbol}</b> | {INTERVAL}\n"
-                    f"🟢 LONG\n"
-                    f"RSI пересёк уровень 30 сверху вниз\n"
-                    f"Цена выше EMA{EMA_PERIOD}\n\n"
-                    f"Цена: <b>{price}</b>\n"
-                    f"RSI: {rsi:.2f}\n"
-                    f"EMA{EMA_PERIOD}: {ema:.2f}\n"
-                    f"Время: "
-                    f"{last['timestamp'].strftime('%Y-%m-%d %H:%M')} UTC"
+            if long_signal:
+
+                message = (
+                    "🟢 <b>СИГНАЛ LONG</b>\n\n"
+                    f"Монета: <b>{symbol}</b>\n"
+                    f"Таймфрейм: {INTERVAL}\n"
+                    f"Цена: <b>{current['close']}</b>\n"
+                    f"RSI: <b>{current['RSI']:.2f}</b>\n"
+                    f"EMA {EMA_PERIOD}: <b>{current['EMA']:.4f}</b>\n"
+                    f"Время свечи: {current['timestamp'].strftime('%d.%m.%Y %H:%M UTC')}"
                 )
 
-                messages.append(msg)
-
-                print("Обнаружен сигнал LONG")
-
-            else:
-
-                print("Условие LONG не выполнено")
+                signals.append(message)
 
         except Exception as error:
 
-            print(
-                f"Ошибка по {symbol}: {error}"
-            )
+            error_message = f"{symbol}: {str(error)}"
 
-    # Отправка найденных сигналов
+            errors.append(error_message)
 
-    for message in messages:
+            print("ОШИБКА:", error_message)
 
-        send_telegram(message)
+    # Отправляем найденные сигналы.
 
-    if not messages:
+    for signal in signals:
 
-        print("\nСигналов нет")
+        send_telegram(signal)
+
+    if signals:
+        print(f"\nНайдено сигналов: {len(signals)}")
+
+    elif errors:
+        print("\nСигналы не проверены из-за ошибок:")
+        for error in errors:
+            print(error)
+
+    else:
+        print("\nСигналов нет.")
 
 
-# ==========================================
+# ==============================
 # ЗАПУСК
-# ==========================================
+# ==============================
 
 if __name__ == "__main__":
 
-    print("================================")
-    print("BYBIT CRYPTO SIGNALS")
-    print("================================")
-
+    print("=" * 50)
+    print("ЗАПУСК КРИПТОСИГНАЛОВ BYBIT")
     print(
         "Время запуска:",
-        datetime.now(timezone.utc).strftime(
-            "%Y-%m-%d %H:%M:%S UTC"
-        )
+        datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M:%S UTC")
     )
+    print("=" * 50)
 
-    check_signals()
+    try:
+        check_signals()
 
-    print("================================")
-    print("Проверка завершена")
-    print("================================")
-```
+    except Exception as error:
+        print("КРИТИЧЕСКАЯ ОШИБКА:", error)
+        raise
