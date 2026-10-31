@@ -19,6 +19,9 @@ RSI_OVERSOLD = 30
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# Ручной запуск GitHub Actions включает тест Telegram.
+MANUAL_RUN = os.getenv("MANUAL_RUN", "false").lower() == "true"
+
 BINANCE_URL = "https://data-api.binance.vision/api/v3/klines"
 TELEGRAM_URL = "https://api.telegram.org/bot{}/sendMessage"
 
@@ -251,7 +254,7 @@ def check_signals():
                 message_lines = [
                     "🟢 <b>СИГНАЛ LONG</b>",
                     "",
-                    f"Биржа данных: Binance Spot",
+                    "Биржа данных: Binance Spot",
                     f"Монета: <b>{symbol}</b>",
                     f"Таймфрейм: {INTERVAL}",
                     f"Цена: <b>{current['close']}</b>",
@@ -339,6 +342,29 @@ if __name__ == "__main__":
     print("=" * 50, flush=True)
 
     try:
+
+        # Тестовое сообщение отправляется
+        # только при ручном запуске GitHub Actions.
+
+        if MANUAL_RUN:
+
+            print(
+                "Ручной запуск: проверяем отправку в Telegram...",
+                flush=True
+            )
+
+            test_message = (
+                "🧪 <b>ТЕСТ TELEGRAM УСПЕШЕН</b>\n\n"
+                "Бот криптосигналов подключён к Telegram.\n"
+                "Отправка сообщений работает.\n\n"
+                "Источник данных: Binance Spot\n"
+                "Проверяемые монеты: BTCUSDT, ETHUSDT\n"
+                "Таймфрейм: 15 минут\n\n"
+                "После теста начинается обычная проверка сигналов."
+            )
+
+            send_telegram(test_message)
+
         check_signals()
 
     except Exception as error:
