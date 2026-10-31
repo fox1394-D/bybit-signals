@@ -53,12 +53,24 @@ def get_klines(symbol, interval, limit):
 
     response = requests.get(BYBIT_URL, params=params, timeout=20)
 
-    print(f"=== {symbol} ===")
-    print(f"Источник: Bybit")
-    print(f"HTTP status: {response.status_code}")
+print(f"=== {symbol} ===")
+print("Источник: Bybit")
+print(f"HTTP status: {response.status_code}")
 
-    response.raise_for_status()
-    data = response.json()
+if response.status_code != 200:
+    print("Текст ошибки Bybit:")
+    print(response.text[:2000])
+
+    print("Дополнительная информация:")
+    for key in ["server", "cf-ray", "x-bapi-limit-status"]:
+        if key in response.headers:
+            print(f"{key}: {response.headers[key]}")
+
+    raise Exception(
+        f"Bybit вернул ошибку HTTP {response.status_code}"
+    )
+
+data = response.json()
 
     if data.get("retCode") != 0:
         raise RuntimeError(
