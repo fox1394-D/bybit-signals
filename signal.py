@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 import pandas as pd
 from datetime import datetime, timezone
@@ -14,7 +15,11 @@ LIMIT = 100
 
 RSI_PERIOD = 14
 EMA_PERIOD = 50
+
 RSI_OVERSOLD = 30
+RSI_OVERBOUGHT = 70
+
+STATE_FILE = "signals_state.json"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -23,6 +28,44 @@ MANUAL_RUN = os.getenv("MANUAL_RUN", "false").lower() == "true"
 
 BINANCE_URL = "https://data-api.binance.vision/api/v3/klines"
 TELEGRAM_URL = "https://api.telegram.org/bot{}/sendMessage"
+
+
+# ==========================================
+# ЗАГРУЗКА И СОХРАНЕНИЕ ИСТОРИИ СИГНАЛОВ
+# ==========================================
+
+def load_signal_history():
+
+    if not os.path.exists(STATE_FILE):
+        print("Файл истории сигналов пока отсутствует. Создаём новую историю.", flush=True)
+        return set()
+
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+
+        if not isinstance(data, list):
+            raise Exception("Неверный формат файла истории сигналов")
+
+        return set(data)
+
+    except Exception as error:
+        raise Exception(f"Не удалось прочитать историю сигналов: {error}")
+
+
+def save_signal_history(history):
+
+    temporary_file = STATE_FILE + ".tmp"
+
+    with open(temporary_file, "w", encoding="utf-8") as file:
+        json.dump(sorted(history), file, ensure_ascii=False, indent=2)
+
+    os.replace(temporary_file, STATE_FILE)
+
+    print(
+        f"История сигналов сохранена. Записей: {len(history)}",
+        flush=True
+    )
 
 
 # ==========================================
@@ -192,6 +235,8 @@ def send_telegram(message):
 
 def check_signals():
 
+    signal_history = load_signal_history()
+
     signals = []
     errors = []
 
@@ -224,9 +269,8 @@ def check_signals():
                 flush=True
             )
 
-            # Условие LONG:
-            # Предыдущий RSI был не ниже 30.
-            # Текущий RSI опустился ниже 30.
+            # LONG:
+            # RSI пересекает уровень 30 сверху вниз.
             # Цена находится выше EMA 50.
 
             long_signal = (
@@ -235,22 +279,81 @@ def check_signals():
                 and current["close"] > current["EMA"]
             )
 
+            # SHORT:
+            # RSI пересекает уровень 70 снизу вверх.
+            # Цена находится ниже EMA 50.
+
+            short_signal = (
+                previous["RSI"] <= RSI_OVERBOUGHT
+                and current["RSI"] > RSI_OVERBOUGHT
+                and current["close"] < current["EMA"]
+            )
+
+            candle_time = current["timestamp"].strftime("%Y-%m-%d %H:%M UTC")
+
             if long_signal:
+                direction = "LONG"
+            elif short_signal:
+                direction = "SHORT"
+            else:
+                direction = None
+
+            if direction is None:
+                print(f"{symbol}: торгового сигнала нет.", flush=True)
+                continue
+
+            # Уникальный ключ: монета + направление + время свечи.
+            # Он не позволяет повторно отправить тот же сигнал.
+
+            signal_key = (
+                f"{symbol}|{direction}|"
+                f"{current['timestamp'].strftime('%Y-%m-%dT%H:%M:%S')}"
+            )
+
+            if signal_key in signal_history:
+
+                print(
+                    f"{symbol}: {direction} уже отправлялся. "
+                    "Повторное сообщение пропускаем.",
+                    flush=True
+                )
+
+                continue
+
+            if direction == "LONG":
 
                 message_lines = [
                     "🟢 <b>СИГНАЛ LONG</b>",
                     "",
-                    "Биржа данных: Binance Spot",
+                    "Источник данных: Binance Spot",
                     f"Монета: <b>{symbol}</b>",
                     f"Таймфрейм: {INTERVAL}",
                     f"Цена: <b>{current['close']}</b>",
                     f"RSI: <b>{current['RSI']:.2f}</b>",
                     f"EMA {EMA_PERIOD}: <b>{current['EMA']:.4f}</b>",
-                    "Время свечи: " + current["timestamp"].strftime("%d.%m.%Y %H:%M UTC")
+                    f"Время свечи: {candle_time}"
                 ]
 
-                signal_message = chr(10).join(message_lines)
-                signals.append(signal_message)
+            else:
+
+                message_lines = [
+                    "🔴 <b>СИГНАЛ SHORT</b>",
+                    "",
+                    "Источник данных: Binance Spot",
+                    f"Монета: <b>{symbol}</b>",
+                    f"Таймфрейм: {INTERVAL}",
+                    f"Цена: <b>{current['close']}</b>",
+                    f"RSI: <b>{current['RSI']:.2f}</b>",
+                    f"EMA {EMA_PERIOD}: <b>{current['EMA']:.4f}</b>",
+                    f"Время свечи: {candle_time}"
+                ]
+
+            signals.append({
+                "key": signal_key,
+                "message": chr(10).join(message_lines),
+                "symbol": symbol,
+                "direction": direction
+            })
 
         except Exception as error:
 
@@ -259,19 +362,30 @@ def check_signals():
 
             print("ОШИБКА:", error_message, flush=True)
 
-    # Отправляем найденные сигналы.
+    # Отправляем только новые сигналы.
+    # Записываем сигнал в историю только после успешной отправки.
+
+    sent_count = 0
 
     for signal in signals:
-        send_telegram(signal)
 
-    if signals:
+        send_telegram(signal["message"])
 
-        print()
-        print(f"Найдено сигналов: {len(signals)}", flush=True)
+        signal_history.add(signal["key"])
+        save_signal_history(signal_history)
 
-    elif errors:
+        sent_count += 1
 
-        print()
+        print(
+            f"Отправлен новый сигнал: "
+            f"{signal['symbol']} {signal['direction']}",
+            flush=True
+        )
+
+    print()
+
+    if errors:
+
         print("Проверка завершилась с ошибками:", flush=True)
 
         for error in errors:
@@ -279,10 +393,10 @@ def check_signals():
 
         raise Exception("Не удалось проверить все торговые инструменты")
 
+    if sent_count:
+        print(f"Новых сигналов отправлено: {sent_count}", flush=True)
     else:
-
-        print()
-        print("Сигналов нет.", flush=True)
+        print("Новых сигналов нет.", flush=True)
 
 
 # ==========================================
@@ -323,6 +437,7 @@ if __name__ == "__main__":
                 "Источник данных: Binance Spot",
                 "Проверяемые монеты: BTCUSDT, ETHUSDT",
                 "Таймфрейм: 15 минут",
+                "Сигналы: LONG и SHORT",
                 "",
                 "После теста начинается обычная проверка сигналов."
             ]
@@ -330,8 +445,6 @@ if __name__ == "__main__":
             test_message = chr(10).join(test_message_lines)
 
             send_telegram(test_message)
-
-        # Обычная проверка рынка.
 
         check_signals()
 
