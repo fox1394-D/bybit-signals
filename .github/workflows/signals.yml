@@ -6,6 +6,13 @@ on:
 
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: crypto-signals
+  cancel-in-progress: false
+
 jobs:
   run-signals:
     runs-on: ubuntu-latest
@@ -36,6 +43,7 @@ jobs:
           head -n 10 signal.py
           echo "Последние строки файла:"
           tail -n 20 signal.py
+          python -m py_compile signal.py
 
       - name: Run signal script
         env:
@@ -51,3 +59,22 @@ jobs:
           echo "=================================="
           echo "PYTHON ЗАВЕРШИЛ РАБОТУ"
           echo "=================================="
+
+      - name: Save signal history
+        if: always()
+        run: |
+          if [ -f signals_state.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            git add signals_state.json
+
+            if ! git diff --cached --quiet; then
+              git commit -m "Update signal history"
+              git push
+            else
+              echo "История сигналов не изменилась."
+            fi
+          else
+            echo "Файл истории пока не создан."
+          fi
